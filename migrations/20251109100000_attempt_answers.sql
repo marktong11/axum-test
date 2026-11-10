@@ -1,0 +1,2 @@
+ALTER TABLE attempts ADD COLUMN player_answer TEXT NOT NULL DEFAULT '';
+ALTER TABLE attempts ADD COLUMN correct_answer TEXT NOT NULL DEFAULT '';
