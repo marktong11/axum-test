@@ -6,6 +6,7 @@ use axum::{
     response::{Html, IntoResponse, Redirect},
     routing::{get, post},
 };
+use tower_http::services::ServeDir;
 use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
 use rand::seq::SliceRandom;
 use serde::Deserialize;
@@ -33,6 +34,7 @@ async fn main() {
     sqlx::migrate!().run(&pool).await.expect("run migrations");
 
     let app = Router::new()
+        .nest_service("/static", ServeDir::new("static"))
         .route("/", get(home))
         .route("/play", get(play))
         .route("/join", post(join))
@@ -121,32 +123,37 @@ fn escape_html(s: &str) -> String {
         .replace('"', "&quot;")
 }
 
-fn site_header(current: &str, player_name: Option<&str>) -> String {
-    let home_class = if current == "home" {
+fn site_header(active: Option<&str>, player_name: Option<&str>) -> String {
+    let home_aria = if active == Some("home") {
         r#" aria-current="page""#
     } else {
         ""
     };
-    let play_class = if current == "play" {
+    let play_aria = if active == Some("play") {
         r#" aria-current="page""#
     } else {
         ""
     };
-    let player_line = player_name
+    let player_list = player_name
         .map(|name| {
             format!(
-                r#"<p class="player">Signed in as <strong>{}</strong></p>"#,
+                r#"<ul><li><small>Signed in as <strong>{}</strong></small></li></ul>"#,
                 escape_html(name)
             )
         })
         .unwrap_or_default();
     format!(
-        r#"<header class="site-header">
+        r#"<header class="container">
   <nav>
-    <a href="/"{home_class}>Home</a>
-    <a href="/play"{play_class}>Play</a>
+    <ul>
+      <li><strong><a href="/">Trivia</a></strong></li>
+    </ul>
+    <ul>
+      <li><a href="/"{home_aria}>Home</a></li>
+      <li><a href="/play"{play_aria}>Play</a></li>
+    </ul>
+    {player_list}
   </nav>
-  {player_line}
 </header>"#
     )
 }
@@ -156,36 +163,25 @@ fn layout(title: &str, body: &str) -> Html<String> {
 }
 
 fn layout_with_nav(title: &str, body: &str, nav: Option<(&str, Option<&str>)>) -> Html<String> {
-    let header = nav
-        .map(|(current, name)| site_header(current, name))
-        .unwrap_or_default();
+    let (active, player_name) = nav
+        .map(|(page, name)| (Some(page), name))
+        .unwrap_or((None, None));
+    let header = site_header(active, player_name);
     Html(format!(
         r#"<!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="light">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{title}</title>
-  <style>
-    :root {{ font-family: system-ui, sans-serif; line-height: 1.5; color: #1a1a1a; background: #f6f7f9; }}
-    body {{ max-width: 56rem; margin: 2rem auto; padding: 0 1rem; }}
-    .site-header {{ display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: .75rem 1.5rem; margin-bottom: 1.5rem; padding-bottom: .75rem; border-bottom: 1px solid #d8dbe2; }}
-    .site-header nav {{ display: flex; gap: 1rem; font-weight: 600; }}
-    .site-header a {{ color: #1a56db; text-decoration: none; }}
-    .site-header a[aria-current="page"] {{ color: #1a1a1a; text-decoration: underline; }}
-    .player {{ margin: 0; font-size: .9rem; color: #555; }}
-    table {{ width: 100%; border-collapse: collapse; font-size: .95rem; }}
-    th, td {{ text-align: left; padding: .5rem; border-bottom: 1px solid #e2e5eb; vertical-align: top; }}
-    th {{ font-size: .8rem; text-transform: uppercase; letter-spacing: .03em; color: #555; }}
-    .result-yes {{ color: #0d6832; font-weight: 600; }}
-    .result-no {{ color: #b42318; font-weight: 600; }}
-    .play-cta {{ display: inline-block; margin: 0 0 1.25rem; padding: .55rem 1rem; font-weight: 600; color: #fff; background: #1a56db; border-radius: .375rem; text-decoration: none; }}
-    .play-cta:hover {{ background: #1343ad; }}
-  </style>
+  <title>{title} · Trivia</title>
+  <link rel="stylesheet" href="/static/pico.min.css">
+  <link rel="stylesheet" href="/static/app.css">
 </head>
 <body>
 {header}
+<main class="container">
 {body}
+</main>
 </body>
 </html>"#
     ))
@@ -223,14 +219,17 @@ fn name_page(note: Option<&str>) -> Html<String> {
     layout(
         "Welcome",
         &format!(
-            r#"<h1>Welcome to Trivia</h1>
+            r#"<hgroup>
+  <h1>Welcome</h1>
+  <p>Enter your name to track your score.</p>
+</hgroup>
 {note_html}
-<p>What's your name?</p>
 <form method="post" action="/join">
-  <p>
-    <input name="name" type="text" required minlength="1" maxlength="64" autofocus>
-    <button type="submit">Start</button>
-  </p>
+  <label>
+    Your name
+    <input name="name" type="text" required minlength="1" maxlength="64" autofocus placeholder="Ada Lovelace">
+  </label>
+  <button type="submit">Start playing</button>
 </form>"#
         ),
     )
@@ -299,16 +298,21 @@ async fn home(State(state): State<AppState>, jar: CookieJar) -> impl IntoRespons
     layout_with_nav(
         "Home",
         &format!(
-            r#"<h1>All attempts</h1>
-<p><a class="play-cta" href="/play">Continue playing</a></p>
-<table>
-  <thead>
-    <tr><th>When</th><th>Player</th><th>Question</th><th>Answered</th><th>Correct</th><th>Result</th></tr>
-  </thead>
-  <tbody>
-    {table_body}
-  </tbody>
-</table>"#,
+            r#"<hgroup>
+  <h1>All attempts</h1>
+  <p>Every question answered across all players.</p>
+</hgroup>
+<p><a href="/play" role="button">Continue playing</a></p>
+<div class="table-scroll">
+  <table>
+    <thead>
+      <tr><th>When</th><th>Player</th><th>Question</th><th>Answered</th><th>Correct</th><th>Result</th></tr>
+    </thead>
+    <tbody>
+      {table_body}
+    </tbody>
+  </table>
+</div>"#,
         ),
         Some(("home", player_name.as_deref())),
     )
@@ -347,7 +351,7 @@ fn question_page(player_name: &str, q: &TriviaQuestion) -> Html<String> {
         let decoded = decode_opentdb(choice);
         let value = escape_html(&decoded);
         options.push_str(&format!(
-            r#"<label style="display:block;margin:.5rem 0;"><input type="radio" name="answer" value="{value}" required> {value}</label>"#,
+            r#"<label><input type="radio" name="answer" value="{value}" required> {value}</label>"#,
         ));
     }
 
@@ -361,15 +365,22 @@ fn question_page(player_name: &str, q: &TriviaQuestion) -> Html<String> {
     layout_with_nav(
         "Play",
         &format!(
-            r#"<h1>Play</h1>
-<p><small>{category} · {difficulty} · {input_type}</small></p>
-<p><strong>{question}</strong></p>
-<form method="post" action="/answer">
-  <input type="hidden" name="correct_answer" value="{correct}">
-  <input type="hidden" name="question" value="{question_raw}">
-  {options}
-  <p><button type="submit">Submit answer</button></p>
-</form>
+            r#"<hgroup>
+  <h1>Play</h1>
+  <p>{category} · {difficulty} · {input_type}</p>
+</hgroup>
+<article>
+  <header><strong>{question}</strong></header>
+  <form method="post" action="/answer">
+    <input type="hidden" name="correct_answer" value="{correct}">
+    <input type="hidden" name="question" value="{question_raw}">
+    <fieldset>
+      <legend>Choose an answer</legend>
+      {options}
+    </fieldset>
+    <button type="submit">Submit answer</button>
+  </form>
+</article>
 <p><a href="/play">Skip to another question</a></p>"#,
         ),
         Some(("play", Some(player_name))),
@@ -429,13 +440,17 @@ async fn check_answer(
 
     let body = format!(
         r#"<h1>{message}</h1>
-<p>Your answer: <strong>{yours}</strong></p>
-<p>The correct answer was: <strong>{correct}</strong></p>
-<p>Your record: <strong>{stats_correct}</strong> correct out of <strong>{stats_total}</strong> answered.</p>
+<dl>
+  <dt>Your answer</dt>
+  <dd>{yours}</dd>
+  <dt>Correct answer</dt>
+  <dd>{correct}</dd>
+  <dt>Your record</dt>
+  <dd><strong>{stats_correct}</strong> correct out of <strong>{stats_total}</strong> answered.</dd>
+</dl>
 <p>
-  <a href="/play">Play another question</a>
-  <span aria-hidden="true"> · </span>
-  <a href="/">Back to home</a>
+  <a href="/play" role="button">Play another question</a>
+  <a href="/" role="button" class="secondary">Back to home</a>
 </p>"#,
         message = message,
         yours = escape_html(&form.answer),

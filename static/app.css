@@ -1,0 +1,18 @@
+/* App-specific tweaks on top of Pico */
+.result-yes {
+  color: var(--pico-ins-color);
+  font-weight: 600;
+}
+
+.result-no {
+  color: var(--pico-del-color);
+  font-weight: 600;
+}
+
+.table-scroll {
+  overflow-x: auto;
+}
+
+main h1:first-child {
+  margin-top: 0;
+}
